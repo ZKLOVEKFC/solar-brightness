@@ -1,0 +1,17 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  syntax:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Python syntax
+        run: python3 -m py_compile solar-brightness.py
+      - name: Check YAML syntax
+        run: python3 -c "import yaml; yaml.safe_load(open('solar-brightness.py').read().split('DEFAULT_CONFIG = \"\"\"')[1].split('\"\"\"')[0])"
