@@ -586,7 +586,7 @@ def display_list():
 def display_list_with_retry(max_retries=3, delay=2):
     """获取显示器列表，带重试（处理 HDMI 握手/镜像切换导致的瞬断）。"""
     for attempt in range(max_retries):
-        displays = display_list_with_retry()
+        displays = display_list()
         if displays:
             return displays
         if attempt < max_retries - 1:
