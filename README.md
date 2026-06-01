@@ -14,6 +14,7 @@
 ## ✨ 特性
 
 - ☀️ **太阳高度角曲线** — 不是简单的日出/日落时间，而是根据太阳实际位置做 `sin(θ)^p` 平滑映射
+- 📅 **时间锚点模式** — 可选的时间→亮度锚点，锚点之间线性插值，太阳+天气作为叠加修正
 - 🌤️ **实时天气修正** — 接入 Open-Meteo 免费 API，阴雨天自动降低亮度（可调整强度）
 - 🖥️ **多显示器独立参数** — 每台显示器可设不同的 min/max/offset，适配不同硬件
 - 🎚️ **渐变过渡** — 每 5 分钟调一次，每次最多 ±3~5%，完全无感
@@ -46,11 +47,25 @@ m1ddc display 1 get luminance   # 应返回 0-100 的亮度值
 git clone https://github.com/zklovekfc/solar-brightness.git
 cd solar-brightness
 
-# 4. 安装依赖
-pip3 install pyyaml
-
-# 5. 一键安装 (创建配置 + 注册定时任务)
+# 4. 一键安装 (纯太阳模式)
 python3 solar-brightness.py --install
+
+# 或者: 安装并设置时间锚点 (一条命令搞定!)
+python3 solar-brightness.py --install \
+  --anchor 08:00:100 \
+  --anchor 17:00:70 \
+  --anchor 20:00:60 \
+  --anchor 23:00:35
+```
+
+也可以直接用安装脚本：
+
+```bash
+# 基本安装
+bash install.sh
+
+# 带时间锚点
+bash install.sh --anchor 08:00:100 --anchor 17:00:70 --anchor 20:00:60 --anchor 23:00:35
 ```
 
 ### 使用

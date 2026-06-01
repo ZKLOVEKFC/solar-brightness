@@ -132,10 +132,25 @@ global:
     cache_minutes: 30
 
   brightness:
-    night_min: 35             # 深夜最低亮度 %
-    day_max: 100              # 晴天正午最高亮度 %
+    night_min: 35             # 深夜最低亮度 % (纯太阳模式用)
+    day_max: 100              # 晴天正午最高亮度 % (纯太阳模式用)
     curve_power: 0.7          # 曲线形状: <1 黄昏更平滑, >1 正午更集中
     weather_effect: 0.45      # 天气影响: 0=不管天气, 1=完全跟随
+
+  # ── 时间锚点模式 (可选) ──────────────────────────
+  # 启用后按时间表线性插值，太阳+天气作为修正叠加
+  schedule:
+    enabled: false            # true=启用时间锚点, false=纯太阳模式
+    weather_blend: 0.3        # 天气影响的混合比例: 0=纯时间表, 1=完全叠加天气
+    anchors:                  # HH:MM → 亮度%, 锚点之间线性插值(时间必须加引号)
+      # - time: '08:00'
+      #   brightness: 100
+      # - time: '17:00'
+      #   brightness: 70
+      # - time: '20:00'
+      #   brightness: 60
+      # - time: '23:00'
+      #   brightness: 35
 
   transition:
     max_step_up: 5            # 每次最多升高 %
@@ -189,6 +204,7 @@ def config_load():
         "location": g.get("location", {}),
         "weather": g.get("weather", {}),
         "brightness": g.get("brightness", {}),
+        "schedule": g.get("schedule", {}),
         "transition": g.get("transition", {}),
         "network": g.get("network", {}),
         "logging": g.get("logging", {}),
@@ -418,11 +434,104 @@ def solar_elevation_angle(lat, lon, dt_local):
 # ║                     亮度计算                                 ║
 # ╚══════════════════════════════════════════════════════════════╝
 
-def target_brightness(elev, cloud_cover, weather_code, cfg):
+def _parse_time_value(time_val):
+    """解析时间值，兼容 YAML sexagesimal 整数和字符串。"""
+    if isinstance(time_val, int):
+        # YAML 1.1 把 08:00 解析为 sexagesimal = 8*60+0 = 480 分钟
+        h, m = divmod(time_val, 60)
+        return f"{h:02d}:{m:02d}"
+    return str(time_val).strip("'\"")
+
+
+def schedule_brightness(now, cfg):
+    """
+    从时间锚点计算亮度（线性插值）。
+    返回 (brightness, is_active)。
+    """
+    sc = cfg.get("schedule", {})
+    if not sc.get("enabled", False):
+        return None, False
+
+    anchors = sc.get("anchors", [])
+    if not anchors or len(anchors) < 2:
+        log.warning("⚠️ schedule.enabled 但锚点不足 (需要 ≥2 个)")
+        return None, False
+
+    # 解析锚点: "HH:MM" → 当天的分钟数
+    parsed = []
+    for a in anchors:
+        try:
+            time_str = _parse_time_value(a["time"])
+            h, m = map(int, time_str.split(":"))
+            parsed.append((h * 60 + m, a["brightness"]))
+        except (ValueError, KeyError, TypeError):
+            log.warning("⚠️ 无效锚点: %s", a)
+            continue
+
+    if len(parsed) < 2:
+        return None, False
+
+    parsed.sort()
+    now_min = now.hour * 60 + now.minute
+
+    # 在锚点之间线性插值（支持跨午夜）
+    # 先找到 now_min 落在哪两个锚点之间
+    n = len(parsed)
+    for i in range(n):
+        t1, b1 = parsed[i]
+        t2, b2 = parsed[(i + 1) % n]
+
+        # 判断 now_min 是否在 [t1, t2) 区间内
+        # 考虑跨午夜: 如果 t1 > t2，说明跨越了午夜
+        if t1 <= t2:
+            # 正常区间: e.g. 08:00 → 17:00
+            if t1 <= now_min < t2:
+                fraction = (now_min - t1) / (t2 - t1)
+                return round(b1 + (b2 - b1) * fraction, 1), True
+        else:
+            # 跨午夜区间: e.g. 23:00 → 08:00
+            if now_min >= t1 or now_min < t2:
+                if now_min >= t1:
+                    fraction = (now_min - t1) / ((1440 - t1) + t2)
+                else:
+                    fraction = ((1440 - t1) + now_min) / ((1440 - t1) + t2)
+                return round(b1 + (b2 - b1) * fraction, 1), True
+
+    # 理论上不会到这里（锚点覆盖了全天），但兜底
+    return float(parsed[0][1]), True
+
+
+def target_brightness(elev, cloud_cover, weather_code, cfg, now=None):
+    """
+    计算目标亮度。
+
+    优先级:
+      1. 时间锚点 (schedule.enabled=true) → 线性插值 + 天气叠加
+      2. 纯太阳模式 → sin(太阳高度角) × 天气修正
+    """
+    if now is None:
+        now = datetime.now()
+
     b = cfg.get("brightness", {})
     night_min, day_max = b.get("night_min", 35), b.get("day_max", 100)
     curve, we = b.get("curve_power", 0.7), b.get("weather_effect", 0.45)
 
+    # ── 时间锚点模式 ──
+    sched_val, sched_active = schedule_brightness(now, cfg)
+    if sched_active:
+        sc = cfg.get("schedule", {})
+        w_blend = sc.get("weather_blend", 0.3)
+
+        # 天气修正 (天气只在锚点基础上打折)
+        wf = weather_factor(cloud_cover, weather_code, we) if cfg.get("weather", {}).get("enabled", True) else 1.0
+
+        # 混合: schedule 值 × (1 - w_blend + w_blend × 天气系数)
+        # w_blend=0 → 纯时间表 (天气不影响)
+        # w_blend=1 → 完全叠加天气
+        blended = sched_val * (1.0 - w_blend + w_blend * wf)
+        return round(max(night_min, blended), 1)
+
+    # ── 纯太阳模式 ──
     if elev <= 0:
         base = night_min
     else:
@@ -520,9 +629,13 @@ def run_once(cfg):
         else:
             log.info("🌤️ 天气不可用，假设晴天")
 
-    elev = solar_elevation_angle(lat, lon, datetime.now())
-    target = target_brightness(elev, cloud_cover, weather_code, cfg)
-    log.info("☀️ 太阳高度角: %.1f° → 目标亮度: %.1f%%", elev, target)
+    now = datetime.now()
+    elev = solar_elevation_angle(lat, lon, now)
+    target = target_brightness(elev, cloud_cover, weather_code, cfg, now=now)
+    if cfg.get("schedule", {}).get("enabled"):
+        log.info("📅 时间锚点模式 → 目标亮度: %.1f%% (太阳: %.1f°)", target, elev)
+    else:
+        log.info("☀️ 太阳高度角: %.1f° → 目标亮度: %.1f%%", elev, target)
 
     displays = display_list()
     if not displays:
@@ -576,10 +689,40 @@ def run_once(cfg):
 # ║                   CLI                                        ║
 # ╚══════════════════════════════════════════════════════════════╝
 
-def cmd_install():
-    """安装 launchd 定时任务和服务。"""
+def cmd_install(anchors=None, enable_schedule=False):
+    """安装 launchd 定时任务和服务。anchors: [(HH:MM, pct), ...]"""
     script_path = Path(__file__).resolve()
     cfg_created = config_create()
+
+    # 如果传入了 anchor 参数，写入配置文件
+    if anchors and CONFIG_PATH.exists():
+        import yaml
+
+        # 用 YAML 处理，但用自定义 dumper 强制时间值加引号
+        def _str_representer(dumper, data):
+            # 匹配 HH:MM 格式的时间字符串，强制加引号
+            if re.match(r"^\d{2}:\d{2}$", data):
+                return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="'")
+            return dumper.represent_str(data)
+
+        with open(CONFIG_PATH) as f:
+            cfg = yaml.safe_load(f)
+
+        if "global" not in cfg:
+            cfg["global"] = {}
+        cfg["global"]["schedule"] = {
+            "enabled": True,
+            "weather_blend": 0.3,
+            "anchors": [{"time": t, "brightness": int(b)} for t, b in anchors],
+        }
+
+        class QuotedDumper(yaml.Dumper):
+            pass
+        QuotedDumper.add_representer(str, _str_representer)
+
+        with open(CONFIG_PATH, "w") as f:
+            yaml.dump(cfg, f, Dumper=QuotedDumper, allow_unicode=True,
+                      default_flow_style=False, sort_keys=False)
 
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -645,7 +788,11 @@ def cmd_install():
   立即: launchctl start com.{PROJECT}
 """)
     if cfg_created:
-        print(f"ℹ️  已创建默认配置文件，请根据你的显示器编辑 {CONFIG_PATH}")
+        print(f"ℹ️  已创建默认配置文件")
+    if anchors:
+        print(f"📅 时间锚点已配置 ({len(anchors)} 个点):")
+        for t, b in sorted(anchors):
+            print(f"     {t} → {b}%")
 
 
 def cmd_status():
@@ -684,16 +831,36 @@ def cmd_status():
             pass
 
 
+def parse_anchor(arg):
+    """解析 --anchor HH:MM:PCT 参数。"""
+    try:
+        parts = arg.split(":")
+        if len(parts) != 3:
+            raise ValueError("格式: HH:MM:PCT, 如 08:00:100")
+        h, m, pct = int(parts[0]), int(parts[1]), int(parts[2])
+        if not (0 <= h <= 23 and 0 <= m <= 59 and 0 <= pct <= 100):
+            raise ValueError("小时0-23, 分钟0-59, 亮度0-100")
+        return (f"{h:02d}:{m:02d}", pct)
+    except (ValueError, TypeError) as e:
+        raise argparse.ArgumentTypeError(str(e))
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog=PROJECT,
         description="基于太阳高度角 + 天气的外接显示器自适应亮度调节",
         epilog=f"项目主页: {GITHUB}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--once", action="store_true", help="执行一次亮度调节后退出")
     parser.add_argument("--install", action="store_true", help="安装 launchd 定时任务")
     parser.add_argument("--uninstall", action="store_true", help="卸载定时任务")
     parser.add_argument("--status", action="store_true", help="显示当前状态")
+    parser.add_argument("--anchor", action="append", metavar="HH:MM:PCT",
+                        type=parse_anchor,
+                        help="添加时间锚点，可多次使用。例: --anchor 08:00:100 --anchor 17:00:70")
+    parser.add_argument("--schedule", action="store_true",
+                        help="启用时间锚点模式 (配合 --install 使用)")
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
 
     args = parser.parse_args()
@@ -709,7 +876,7 @@ def main():
         return
 
     if args.install:
-        cmd_install()
+        cmd_install(anchors=args.anchor, enable_schedule=args.schedule)
         return
 
     if args.status:
@@ -717,12 +884,11 @@ def main():
         return
 
     # 默认模式: 单次运行
-    if args.once or True:  # 默认即单次运行
-        cfg = config_load()
-        setup_logging(cfg.get("logging", {}).get("level", "INFO"))
-        log.info("━━━━ %s v%s ━━━━", PROJECT, VERSION)
-        run_once(cfg)
-        log.info("━━━━ 完成 ━━━━")
+    cfg = config_load()
+    setup_logging(cfg.get("logging", {}).get("level", "INFO"))
+    log.info("━━━━ %s v%s ━━━━", PROJECT, VERSION)
+    run_once(cfg)
+    log.info("━━━━ 完成 ━━━━")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,10 @@
 #!/bin/bash
 # solar-brightness 一键安装脚本
+#
+# 基本安装:          bash install.sh
+# 带时间锚点:        bash install.sh --anchor 08:00:100 --anchor 17:00:70 --anchor 20:00:60 --anchor 23:00:35
+#
+# 所有参数会透传给 solar-brightness.py --install
 set -e
 
 RED='\033[0;31m'
@@ -9,6 +14,8 @@ NC='\033[0m'
 
 echo -e "${YELLOW}☀️  solar-brightness 安装脚本${NC}"
 echo ""
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # 检查 macOS
 if [[ "$(uname)" != "Darwin" ]]; then
@@ -48,14 +55,14 @@ echo "📦 安装 Python 依赖..."
 pip3 install --quiet pyyaml 2>/dev/null || pip3 install pyyaml
 echo -e "${GREEN}✅ PyYAML 已安装${NC}"
 
-# 安装服务
+# 安装服务（透传所有参数）
 echo ""
-python3 "$(dirname "$0")/solar-brightness.py" --install
+python3 "$SCRIPT_DIR/solar-brightness.py" --install "$@"
 
 echo ""
 echo -e "${GREEN}✅ 完成！${NC}"
 echo ""
 echo "下一步:"
 echo "  1. 编辑配置: vim ~/.config/solar-brightness/config.yaml"
-echo "  2. 查看状态: python3 $(dirname "$0")/solar-brightness.py --status"
+echo "  2. 查看状态: python3 $SCRIPT_DIR/solar-brightness.py --status"
 echo "  3. 查看日志: tail -f ~/.config/solar-brightness/solar-brightness.log"
