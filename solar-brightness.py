@@ -799,6 +799,16 @@ def cmd_install(anchors=None, enable_schedule=False):
   恢复: launchctl load {LAUNCHD_PLIST}
   立即: launchctl start com.{PROJECT}
 """)
+    # ── sleepwatcher 唤醒钩子 ──
+    wakeup_script = Path(os.path.expanduser("~/.wakeup"))
+    if not wakeup_script.exists():
+        with open(wakeup_script, "w") as f:
+            f.write(f"#!/bin/bash\n# solar-brightness wake hook\npython3 {script_path} --once\n")
+        wakeup_script.chmod(0o755)
+    subprocess.run(["brew", "services", "start", "sleepwatcher"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(f"🌙 休眠唤醒修正: 已启用 (sleepwatcher + ~/.wakeup)")
+
     if cfg_created:
         print(f"ℹ️  已创建默认配置文件")
     if anchors:

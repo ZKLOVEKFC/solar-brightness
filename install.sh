@@ -39,6 +39,24 @@ else
     echo -e "${GREEN}✅ m1ddc 已安装${NC}"
 fi
 
+# 安装 sleepwatcher (休眠唤醒后自动修正亮度)
+if ! command -v sleepwatcher &>/dev/null; then
+    echo "📦 安装 sleepwatcher..."
+    brew install sleepwatcher 2>/dev/null || true
+fi
+if command -v sleepwatcher &>/dev/null; then
+    # 创建唤醒脚本
+    cat > ~/.wakeup << 'WAKEEOF'
+#!/bin/bash
+# solar-brightness wake hook
+python3 SCRIPT_PLACEHOLDER --once
+WAKEEOF
+    sed -i '' "s|SCRIPT_PLACEHOLDER|$SCRIPT_DIR/solar-brightness.py|" ~/.wakeup
+    chmod +x ~/.wakeup
+    brew services start sleepwatcher 2>/dev/null || true
+    echo -e "${GREEN}✅ sleepwatcher 已配置 (休眠唤醒自动修正)${NC}"
+fi
+
 # 验证 DDC/CI
 echo "🔍 检测显示器..."
 DISPLAYS=$(m1ddc display list 2>/dev/null)
