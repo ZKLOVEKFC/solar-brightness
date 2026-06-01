@@ -583,6 +583,18 @@ def display_list():
         return []
 
 
+def display_list_with_retry(max_retries=3, delay=2):
+    """获取显示器列表，带重试（处理 HDMI 握手/镜像切换导致的瞬断）。"""
+    for attempt in range(max_retries):
+        displays = display_list_with_retry()
+        if displays:
+            return displays
+        if attempt < max_retries - 1:
+            log.warning("⚠️ 未发现显示器，%ds 后重试 (%d/%d)...", delay, attempt + 1, max_retries)
+            time.sleep(delay)
+    return []
+
+
 def display_get(idx):
     try:
         r = subprocess.run([_M1DDC, "display", str(idx), "get", "luminance"],
@@ -637,7 +649,7 @@ def run_once(cfg):
     else:
         log.info("☀️ 太阳高度角: %.1f° → 目标亮度: %.1f%%", elev, target)
 
-    displays = display_list()
+    displays = display_list_with_retry()
     if not displays:
         log.warning("⚠️ 未发现 DDC/CI 可控显示器")
         return
@@ -809,7 +821,7 @@ def cmd_status():
         if r.returncode == 0:
             print(r.stdout.split("\n")[0] if r.stdout else "")
 
-    displays = display_list() if _M1DDC and os.path.exists(_M1DDC) else []
+    displays = display_list_with_retry() if _M1DDC and os.path.exists(_M1DDC) else []
     if displays:
         print(f"\n显示器 ({len(displays)} 台):")
         for idx, name, ident in displays:
