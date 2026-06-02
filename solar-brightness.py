@@ -156,7 +156,7 @@ global:
   transition:
     max_step_up: 5            # 每次最多升高 %
     max_step_down: 3          # 每次最多降低 %
-    tick_minutes: 5           # 执行间隔(分钟)
+    tick_minutes: 30          # 执行间隔(分钟)
 
   network:
     proxy: null               # http://127.0.0.1:7897 或 null
