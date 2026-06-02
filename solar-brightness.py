@@ -595,21 +595,49 @@ def display_list_with_retry(max_retries=3, delay=2):
     return []
 
 
-def display_get(idx):
+def display_get(idx, retry=True):
+    """
+    读取显示器亮度。0 和 100 可能是唤醒瞬断导致的虚值，自动重试。
+    """
     try:
         r = subprocess.run([_M1DDC, "display", str(idx), "get", "luminance"],
                            capture_output=True, text=True, timeout=10)
-        return int(r.stdout.strip()) if r.returncode == 0 else None
+        if r.returncode != 0:
+            return None
+        val = int(r.stdout.strip())
+        # 0 或 100 是可疑值（刚唤醒时 DDC/CI 未就绪），重试一次
+        if retry and val in (0, 100):
+            log.debug("  亮度读数为 %d，疑似虚值，1s 后重试...", val)
+            time.sleep(1)
+            return display_get(idx, retry=False)
+        return val
     except (subprocess.TimeoutExpired, ValueError):
         return None
 
 
 def display_set(idx, value):
+    """
+    设置显示器亮度，写入后回读验证。
+    如果没生效（刚唤醒时 DDC/CI 可能丢命令），重试一次。
+    """
     value = max(0, min(100, int(round(value))))
     try:
         r = subprocess.run([_M1DDC, "display", str(idx), "set", "luminance", str(value)],
                            capture_output=True, text=True, timeout=10)
-        return r.returncode == 0
+        if r.returncode != 0:
+            return False
+        # 回读验证（等待 0.5s 让显示器应用）
+        time.sleep(0.5)
+        actual = display_get(idx, retry=False)
+        if actual is not None and abs(actual - value) <= 2:
+            return True
+        # 偏差过大，可能写入丢包，重试一次
+        if actual is not None:
+            log.debug("  写入 %d%% 但回读 %d%%，重试...", value, actual)
+            time.sleep(1)
+            subprocess.run([_M1DDC, "display", str(idx), "set", "luminance", str(value)],
+                           capture_output=True, text=True, timeout=10)
+        return True  # 即使回读偏差也接受，下次 tick 会修正
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False
 
