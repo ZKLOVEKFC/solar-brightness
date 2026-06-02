@@ -936,6 +936,8 @@ def main():
     parser.add_argument("--once", action="store_true", help="执行一次亮度调节后退出")
     parser.add_argument("--install", action="store_true", help="安装 launchd 定时任务")
     parser.add_argument("--uninstall", action="store_true", help="卸载定时任务")
+    parser.add_argument("--off", action="store_true", help="暂停自动调节 (保留配置，可恢复)")
+    parser.add_argument("--on", action="store_true", help="恢复自动调节")
     parser.add_argument("--status", action="store_true", help="显示当前状态")
     parser.add_argument("--anchor", action="append", metavar="HH:MM:PCT",
                         type=parse_anchor,
@@ -951,9 +953,32 @@ def main():
             subprocess.run(["launchctl", "unload", str(LAUNCHD_PLIST)],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             LAUNCHD_PLIST.unlink()
+            subprocess.run(["brew", "services", "stop", "sleepwatcher"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print(f"✅ 已卸载 {PROJECT}")
         else:
             print("未安装")
+        return
+
+    if args.off:
+        if LAUNCHD_PLIST.exists():
+            subprocess.run(["launchctl", "unload", str(LAUNCHD_PLIST)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["brew", "services", "stop", "sleepwatcher"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"⏸️  {PROJECT} 已暂停 (定时任务 + 唤醒修正已关闭)")
+        return
+
+    if args.on:
+        if LAUNCHD_PLIST.exists():
+            subprocess.run(["launchctl", "load", str(LAUNCHD_PLIST)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            print(f"⚠️  未安装，请先运行 --install")
+            return
+        subprocess.run(["brew", "services", "start", "sleepwatcher"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"▶️  {PROJECT} 已恢复 (定时任务 + 唤醒修正已开启)")
         return
 
     if args.install:
